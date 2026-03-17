@@ -727,6 +727,19 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  function routeIssueId(req: Request): string {
+    return (req.params.id as string | undefined) ?? (req.params.issueId as string | undefined) ?? "";
+  }
+
+  function assertIssueCompanyPathMatches(req: Request, res: Response, companyId: string) {
+    const pathCompanyId = typeof req.params.companyId === "string" ? req.params.companyId : "";
+    if (pathCompanyId && pathCompanyId !== companyId) {
+      res.status(422).json({ error: "Issue does not belong to company" });
+      return false;
+    }
+    return true;
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -882,6 +895,42 @@ export function issueRoutes(
     });
     res.json(removed);
   });
+
+  router.get(["/issues/:id", "/companies/:companyId/issues/:issueId"], async (req, res) => {
+    const id = routeIssueId(req);
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
+    assertCompanyAccess(req, issue.companyId);
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
+      svc.getAncestors(issue.id),
+      svc.findMentionedProjectIds(issue.id),
+      documentsSvc.getIssueDocumentPayload(issue),
+    ]);
+    const mentionedProjects = mentionedProjectIds.length > 0
+      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+      : [];
+    const currentExecutionWorkspace = issue.executionWorkspaceId
+      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      : null;
+    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.json({
+      ...issue,
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      ...documentPayload,
+      project: project ?? null,
+      goal: goal ?? null,
+      mentionedProjects,
+      currentExecutionWorkspace,
+      workProducts,
+    });
+  });
+
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
@@ -1745,13 +1794,14 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.patch(["/issues/:id", "/companies/:companyId/issues/:issueId"], validate(updateIssueRouteSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, existing.companyId)) return;
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
@@ -2463,13 +2513,14 @@ export function issueRoutes(
     res.json(issue);
   });
 
-  router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/checkout", "/companies/:companyId/issues/:issueId/checkout"], validate(checkoutIssueSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
 
     if (issue.projectId) {
@@ -2537,13 +2588,14 @@ export function issueRoutes(
     res.json(updated);
   });
 
-  router.post("/issues/:id/release", async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/release", "/companies/:companyId/issues/:issueId/release"], async (req, res) => {
+    const id = routeIssueId(req);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, existing.companyId)) return;
     assertCompanyAccess(req, existing.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
@@ -2620,13 +2672,14 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.get("/issues/:id/comments", async (req, res) => {
-    const id = req.params.id as string;
+  router.get(["/issues/:id/comments", "/companies/:companyId/issues/:issueId/comments"], async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
@@ -2917,14 +2970,15 @@ export function issueRoutes(
     },
   );
 
-  router.get("/issues/:id/comments/:commentId", async (req, res) => {
-    const id = req.params.id as string;
+  router.get(["/issues/:id/comments/:commentId", "/companies/:companyId/issues/:issueId/comments/:commentId"], async (req, res) => {
+    const id = routeIssueId(req);
     const commentId = req.params.commentId as string;
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
@@ -3080,13 +3134,14 @@ export function issueRoutes(
     res.json(bundle);
   });
 
-  router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/comments", "/companies/:companyId/issues/:issueId/comments"], validate(addIssueCommentSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
