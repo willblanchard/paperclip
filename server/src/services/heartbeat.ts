@@ -136,6 +136,11 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
+/** Max concurrent running heartbeat runs across all agents sharing the same adapter type.
+ *  Primarily useful for gemini_local where Google throttles concurrent OAuth connections. */
+const ADAPTER_MAX_CONCURRENT_RUNS: Record<string, number> = {
+  gemini_local: 2,
+};
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -3476,6 +3481,15 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForAdapterType(adapterType: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(eq(agents.adapterType, adapterType), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -3834,6 +3848,44 @@ export function heartbeatService(db: Db) {
       .where(eq(heartbeatRuns.id, run.id))
       .returning()
       .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Kill child processes from a previous server lifetime that are still alive.
+   * Called once at startup, before reapOrphanedRuns, so that orphaned processes
+   * (e.g. Gemini CLI stuck in backoff) are terminated and the reaper can then
+   * mark those runs as failed and optionally retry them.
+   */
+  async function killOrphanedProcesses() {
+    const activeRuns = await db
+      .select({
+        run: heartbeatRuns,
+        adapterType: agents.adapterType,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.status, "running"));
+
+    let killed = 0;
+    for (const { run, adapterType } of activeRuns) {
+      // Only kill processes for adapters that spawn tracked local children
+      if (!isTrackedLocalChildProcessAdapter(adapterType)) continue;
+      // Skip runs that are tracked in-memory (should be none at startup, but be safe)
+      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      if (!run.processPid || !isProcessAlive(run.processPid)) continue;
+
+      try {
+        process.kill(run.processPid, "SIGTERM");
+        killed += 1;
+        logger.warn(
+          { runId: run.id, agentId: run.agentId, pid: run.processPid, adapterType },
+          "killed orphaned child process from previous server lifetime",
+        );
+      } catch {
+        // Process may have exited between check and kill — ignore
+      }
+    }
+    return { killed };
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
@@ -4803,6 +4855,13 @@ export function heartbeatService(db: Db) {
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
+
+      // Enforce adapter-level concurrency limits (e.g. gemini_local OAuth throttling)
+      const adapterLimit = ADAPTER_MAX_CONCURRENT_RUNS[agent.adapterType];
+      if (adapterLimit != null) {
+        const adapterRunning = await countRunningRunsForAdapterType(agent.adapterType);
+        if (adapterRunning >= adapterLimit) return [];
+      }
 
       const queuedRuns = await db
         .select()
@@ -7470,6 +7529,8 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reportRunActivity: clearDetachedRunWarning,
+
+    killOrphanedProcesses,
 
     reapOrphanedRuns,
 

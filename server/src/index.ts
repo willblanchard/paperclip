@@ -659,10 +659,17 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
+    // Kill orphaned child processes from the previous server lifetime, then reap
+    // orphaned running runs while in-memory execution state is empty, and finally
+    // resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
-      .reapOrphanedRuns()
+      .killOrphanedProcesses()
+      .then((result) => {
+        if (result.killed > 0) {
+          logger.warn({ killed: result.killed }, "killed orphaned child processes at startup");
+        }
+      })
+      .then(() => heartbeat.reapOrphanedRuns())
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();

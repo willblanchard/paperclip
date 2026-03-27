@@ -31,6 +31,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -395,14 +396,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const quotaMeta = detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
 
     if (attempt.proc.timedOut) {
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
+        errorMessage: quotaMeta.exhausted
+          ? "Gemini quota exhausted — daily capacity reached"
+          : `Timed out after ${timeoutSec}s`,
+        errorCode: quotaMeta.exhausted
+          ? "gemini_quota_exhausted"
+          : authMeta.requiresAuth
+            ? "gemini_auth_required"
+            : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -437,8 +449,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorMessage: (attempt.proc.exitCode ?? 0) === 0
+        ? (quotaMeta.exhausted ? "Gemini quota exhausted — daily capacity reached" : null)
+        : fallbackErrorMessage,
+      errorCode: quotaMeta.exhausted
+        ? "gemini_quota_exhausted"
+        : (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
