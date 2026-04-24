@@ -657,21 +657,44 @@ export function agentRoutes(db: Db) {
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type !== "board") {
-      throw forbidden(
-        "Only board-authenticated callers can manage instructions path or bundle configuration",
-      );
+    if (req.actor.type === "board") {
+      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+      return;
     }
-    await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+    // Agents with canCreateAgents permission can manage other agents'
+    // instructions paths — they need this to configure agents they create.
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (
+        actorAgent &&
+        actorAgent.companyId === targetAgent.companyId &&
+        (actorAgent.role === "ceo" || Boolean((actorAgent.permissions as Record<string, unknown> | null)?.canCreateAgents))
+      ) {
+        return;
+      }
+    }
+    throw forbidden(
+      "Only board-authenticated callers or agents with create-agent permission can manage instructions path or bundle configuration",
+    );
   }
 
-  function assertNoAgentInstructionsConfigMutation(
+  async function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
   ) {
     if (req.actor.type !== "agent" || !adapterConfig) return;
     const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS.filter((key) => adapterConfig[key] !== undefined);
     if (changedSensitiveKeys.length === 0) return;
+    // Allow agents with canCreateAgents permission to modify instructions config
+    if (req.actor.agentId) {
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (
+        actorAgent &&
+        (actorAgent.role === "ceo" || Boolean((actorAgent.permissions as Record<string, unknown> | null)?.canCreateAgents))
+      ) {
+        return;
+      }
+    }
     throw forbidden(
       `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
     );
@@ -1400,7 +1423,7 @@ export function agentRoutes(db: Db) {
       req,
       collectAgentAdapterWorkspaceCommandPaths(hireInput.adapterConfig),
     );
-    assertNoAgentInstructionsConfigMutation(
+    await assertNoAgentInstructionsConfigMutation(
       req,
       (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
     );
@@ -1585,7 +1608,7 @@ export function agentRoutes(db: Db) {
       req,
       collectAgentAdapterWorkspaceCommandPaths(createInput.adapterConfig),
     );
-    assertNoAgentInstructionsConfigMutation(
+    await assertNoAgentInstructionsConfigMutation(
       req,
       (createInput.adapterConfig ?? {}) as Record<string, unknown>,
     );
@@ -1724,10 +1747,6 @@ export function agentRoutes(db: Db) {
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
-    }
-
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -1988,7 +2007,7 @@ export function agentRoutes(db: Db) {
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentInstructionsConfigMutation(req, adapterConfig);
+      await assertNoAgentInstructionsConfigMutation(req, adapterConfig);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectAgentAdapterWorkspaceCommandPaths(adapterConfig),
