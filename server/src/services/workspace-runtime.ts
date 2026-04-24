@@ -1377,22 +1377,37 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
+        let gitStatus: string | null = null;
         try {
-          await recordGitOperation(input.recorder, {
-            phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
-            cwd: repoRoot,
-            metadata: {
-              workspaceId: input.workspace.id,
-              workspacePath,
-              branchName: input.workspace.branchName,
-              cleanupAction: "worktree_remove",
-            },
-            successMessage: `Removed git worktree ${workspacePath}\n`,
-            failureLabel: `git worktree remove ${workspacePath}`,
-          });
+          gitStatus = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath);
         } catch (err) {
-          warnings.push(err instanceof Error ? err.message : String(err));
+          warnings.push(
+            `Skipped removing git worktree "${workspacePath}" because Paperclip could not inspect git status: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+
+        if (gitStatus && gitStatus.length > 0) {
+          warnings.push(`Skipped removing git worktree "${workspacePath}" because it has uncommitted or untracked files.`);
+        } else if (gitStatus === "") {
+          try {
+            await recordGitOperation(input.recorder, {
+              phase: "worktree_cleanup",
+              args: ["worktree", "remove", "--force", workspacePath],
+              cwd: repoRoot,
+              metadata: {
+                workspaceId: input.workspace.id,
+                workspacePath,
+                branchName: input.workspace.branchName,
+                cleanupAction: "worktree_remove",
+              },
+              successMessage: `Removed git worktree ${workspacePath}\n`,
+              failureLabel: `git worktree remove ${workspacePath}`,
+            });
+          } catch (err) {
+            warnings.push(err instanceof Error ? err.message : String(err));
+          }
         }
       }
     }
