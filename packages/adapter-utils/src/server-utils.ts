@@ -89,6 +89,14 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "",
+  "Memory discipline:",
+  "- MEMORY.md is an index of topic files under memory/. Do NOT load all topic files at once.",
+  "- Only read topic files relevant to the current task. Each topic file should stay under 3KB.",
+  "- When you learn a durable pattern, write it to the appropriate topic file (or create a new one).",
+  "- Daily notes go to memory/YYYY-MM-DD.md — keep them concise (progress, blockers, next actions).",
+  "- Archive stale daily notes to memory/_archive/ when they are more than 7 days old.",
+  "- Do not duplicate incident-specific details that are already captured in issue comments.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {

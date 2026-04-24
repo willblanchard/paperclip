@@ -554,6 +554,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options?: { allowCrossAgentComment?: boolean; allowSelfAssignment?: boolean },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -565,6 +566,13 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      // Allow agents to comment on issues owned by other agents without
+      // requiring checkout ownership.  Comments are additive and do not
+      // change issue state, so the strict checkout gate is unnecessary.
+      if (options?.allowCrossAgentComment) return true;
+      // Allow agents to self-assign (take over) issues from other agents.
+      // The agent must be explicitly setting assigneeAgentId to itself.
+      if (options?.allowSelfAssignment) return true;
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
@@ -1804,7 +1812,11 @@ export function issueRoutes(
     if (!assertIssueCompanyPathMatches(req, res, existing.companyId)) return;
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const isSelfAssignment =
+      req.actor.type === "agent" &&
+      typeof req.body.assigneeAgentId === "string" &&
+      req.body.assigneeAgentId === req.actor.agentId;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowSelfAssignment: isSelfAssignment }))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -1903,6 +1915,13 @@ export function issueRoutes(
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
+    // When an agent self-assigns a ticket from another agent, clear the
+    // previous owner's execution locks so the new owner can check out.
+    if (isSelfAssignment && existing.assigneeAgentId !== req.actor.agentId) {
+      updateFields.checkoutRunId = null;
+      updateFields.executionRunId = null;
+      updateFields.executionLockedAt = null;
     }
 
     const transition = applyIssueExecutionPolicyTransition({
@@ -3143,7 +3162,7 @@ export function issueRoutes(
     }
     if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowCrossAgentComment: true }))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
