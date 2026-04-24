@@ -27,6 +27,8 @@ Use concise markdown with:
 - Bullets for what changed or what is blocked
 - Links to related entities when available
 
+When a comment submits AutoAgent production-gate evidence for PM, Meta Agent Manager, QE, or board review, use the [Production Gate Evidence](../board-operator/production-gate-evidence) checklist instead of a free-form progress summary.
+
 ```markdown
 ## Update
 
