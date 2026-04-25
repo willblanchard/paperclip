@@ -56,7 +56,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -108,6 +108,145 @@ type ExecutionStageWakeContext = {
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
 };
+
+type DonePaperclipMainGuardrailSource = {
+  body: string | null | undefined;
+};
+
+type DonePaperclipMainGuardrailIssue = {
+  title: string;
+  description?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
+};
+
+const githubPullRequestUrlPattern = /https?:\/\/github\.com\/[^\s)]+\/pull\/\d+/i;
+const genericPullRequestReferencePattern = /\bPR\s*#?\d+\b|\bpull\/\d+\b/i;
+const publishableDoneSignalPattern =
+  /\b(?:paperclip\/main|origin\/dev|pull\/\d+|PR\s*#?\d+|publishable|repo|repository|branch|commit|merge|merged|code|data)\b/i;
+const explicitNonRepoDoneExceptionPattern =
+  /\b(?:non[- ]repo|no publishable repo changes|no repo changes|no code changes|no PR needed|PR not needed|paperclip\/main PR not needed)\b(?:\s*[:;-]\s*|\s+because\s+).{8,}/i;
+const pushedCommitEvidencePattern =
+  /\b(?:pushed commit(?: SHA)?|commit SHA|pushed SHA|branch tip|head commit)\b[^.\n]{0,80}\b[0-9a-f]{7,40}\b/i;
+const unmergedPaperclipMainPattern =
+  /\b(?:unmerged|not merged|mergedAt\s*[:=]\s*null|review[_ -]?required|review required|still open|open\/unmerged|draft|branch protection[^.\n]{0,100}requires|pending[^.\n]{0,100}(?:approval|review|merge))\b/i;
+const mergedPaperclipMainPattern =
+  /\b(?:merged and pushed|merge commit|paperclip\/main[^.\n]{0,200}(?:has merged|merged and pushed|merge commit|merged\s+(?:as|into|to))|(?:merged and pushed|merge commit)[^.\n]{0,200}paperclip\/main|mergedAt\s*[:=]\s*(?!null)\S+)\b/i;
+
+function paperclipMainPrStateFromText(text: string): {
+  mentioned: boolean;
+  state: "merged" | "unmerged" | null;
+  prUrl: string | null;
+} {
+  const mentionsPaperclipMain = /\bpaperclip\/main\b/i.test(text);
+  const prUrl = text.match(githubPullRequestUrlPattern)?.[0] ?? null;
+  const mentionsPr = Boolean(prUrl) || genericPullRequestReferencePattern.test(text);
+  if (!mentionsPaperclipMain || !mentionsPr) {
+    return { mentioned: false, state: null, prUrl };
+  }
+
+  if (unmergedPaperclipMainPattern.test(text)) {
+    return { mentioned: true, state: "unmerged", prUrl };
+  }
+  if (mergedPaperclipMainPattern.test(text)) {
+    return { mentioned: true, state: "merged", prUrl };
+  }
+  return { mentioned: true, state: null, prUrl };
+}
+
+function validateDonePaperclipMainGuardrail(input: {
+  issue: DonePaperclipMainGuardrailIssue;
+  previousComments: DonePaperclipMainGuardrailSource[];
+  currentCommentBody?: string | null;
+}) {
+  const sources = [
+    input.issue.title,
+    input.issue.description,
+    ...input.previousComments.map((comment) => comment.body),
+    input.currentCommentBody,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const combined = sources.join("\n\n");
+
+  if (explicitNonRepoDoneExceptionPattern.test(combined)) {
+    return;
+  }
+
+  const requiresMainPrEvidence =
+    Boolean(input.issue.projectWorkspaceId) ||
+    Boolean(input.issue.executionWorkspaceId) ||
+    publishableDoneSignalPattern.test(combined);
+  if (!requiresMainPrEvidence) {
+    return;
+  }
+
+  let sawPaperclipMainPr = false;
+  let latestState: "merged" | "unmerged" | null = null;
+  let latestPrUrl: string | null = null;
+  for (const source of sources) {
+    const evidence = paperclipMainPrStateFromText(source);
+    if (!evidence.mentioned) continue;
+    sawPaperclipMainPr = true;
+    latestState = evidence.state;
+    latestPrUrl = evidence.prUrl ?? latestPrUrl;
+  }
+
+  if (!sawPaperclipMainPr) {
+    throw unprocessable(
+      "Done transition for repo or publishable work requires a paperclip/main PR link with merged evidence, or an explicit non-repo reason.",
+      { guardrail: "paperclip_main_pr_done_gate" },
+    );
+  }
+
+  if (latestState !== "merged") {
+    throw unprocessable(
+      "paperclip/main PR must be merged before marking issue done.",
+      {
+        guardrail: "paperclip_main_pr_done_gate",
+        paperclipMainPr: latestPrUrl,
+        latestState: latestState ?? "missing_merged_evidence",
+      },
+    );
+  }
+}
+
+function validateInReviewPushedPrGuardrail(input: {
+  issue: DonePaperclipMainGuardrailIssue;
+  previousComments: DonePaperclipMainGuardrailSource[];
+  currentCommentBody?: string | null;
+}) {
+  const sources = [
+    input.issue.title,
+    input.issue.description,
+    ...input.previousComments.map((comment) => comment.body),
+    input.currentCommentBody,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const combined = sources.join("\n\n");
+
+  if (explicitNonRepoDoneExceptionPattern.test(combined)) {
+    return;
+  }
+
+  const requiresPushedPrEvidence =
+    Boolean(input.issue.projectWorkspaceId) ||
+    Boolean(input.issue.executionWorkspaceId) ||
+    publishableDoneSignalPattern.test(combined);
+  if (!requiresPushedPrEvidence) {
+    return;
+  }
+
+  const hasPrimaryPrLink = sources.some((source) => paperclipMainPrStateFromText(source).mentioned);
+  const hasPushedCommit = sources.some((source) => pushedCommitEvidencePattern.test(source));
+  if (!hasPrimaryPrLink || !hasPushedCommit) {
+    throw unprocessable(
+      "in_review requires pushed work with a primary paperclip/main PR link and pushed commit SHA recorded.",
+      {
+        guardrail: "paperclip_main_pr_in_review_gate",
+        hasPrimaryPrLink,
+        hasPushedCommit,
+      },
+    );
+  }
+}
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -2039,6 +2178,30 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    if (existing.status !== "done" && updateFields.status === "done") {
+      const listComments = (svc as { listComments?: typeof svc.listComments }).listComments;
+      const previousComments = typeof listComments === "function"
+        ? await listComments(existing.id, { order: "asc", limit: 500 })
+        : [];
+      validateDonePaperclipMainGuardrail({
+        issue: existing,
+        previousComments,
+        currentCommentBody: commentBody,
+      });
+    }
+    if (existing.status !== "in_review" && updateFields.status === "in_review") {
+      const listComments = (svc as { listComments?: typeof svc.listComments }).listComments;
+      const previousComments = typeof listComments === "function"
+        ? await listComments(existing.id, { order: "asc", limit: 500 })
+        : [];
+      validateInReviewPushedPrGuardrail({
+        issue: existing,
+        previousComments,
+        currentCommentBody: commentBody,
+      });
+    }
+
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
