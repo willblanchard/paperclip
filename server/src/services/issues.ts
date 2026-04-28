@@ -44,8 +44,8 @@ import {
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-export const ISSUE_LIST_DEFAULT_LIMIT = 500;
-export const ISSUE_LIST_MAX_LIMIT = 1000;
+export const ISSUE_LIST_DEFAULT_LIMIT = 2000;
+export const ISSUE_LIST_MAX_LIMIT = 5000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;

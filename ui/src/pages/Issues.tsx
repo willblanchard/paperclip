@@ -95,7 +95,7 @@ export function Issues() {
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
-      ...(workspaceIdFilter ? { limit: WORKSPACE_FILTER_ISSUE_LIMIT } : {}),
+      limit: workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : 2000,
     }),
     enabled: !!selectedCompanyId,
   });
