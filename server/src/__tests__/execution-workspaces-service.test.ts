@@ -343,7 +343,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readExecutionWorkspaceConfig(byId.get(untouchedWorkspaceId) ?? null)).toBeNull();
   });
 
-  it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
+  it("blocks destructive close for dirty and unmerged git worktrees", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
     const worktreePath = path.join(path.dirname(repoRoot), `paperclip-worktree-${randomUUID()}`);
@@ -416,10 +416,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(readiness).toMatchObject({
       workspaceId: executionWorkspaceId,
-      state: "ready_with_warnings",
+      state: "blocked",
       isSharedWorkspace: false,
       isProjectPrimaryWorkspace: false,
-      isDestructiveCloseAllowed: true,
+      isDestructiveCloseAllowed: false,
       git: {
         workspacePath: worktreePath,
         branchName: "paperclip-close-check",
@@ -432,6 +432,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         isMergedIntoBase: false,
       },
     });
+    expect(readiness?.blockingReasons).toEqual(expect.arrayContaining([
+      "This git worktree has 1 untracked file; archive it after committing, stashing, or removing the file.",
+      "This git worktree has 1 unmerged commit ahead of main; push or merge it before archive cleanup.",
+    ]));
     expect(readiness?.warnings).toEqual(expect.arrayContaining([
       "The workspace has 1 untracked file.",
       "This workspace is 1 commit ahead of main and is not merged.",

@@ -591,6 +591,13 @@ export function executionWorkspaceService(db: Db) {
             ? "The workspace has 1 modified tracked file."
             : `The workspace has ${git.dirtyEntryCount} modified tracked files.`,
         );
+        if (!isSharedWorkspace && executionWorkspace.providerType === "git_worktree") {
+          blockingReasons.push(
+            git.dirtyEntryCount === 1
+              ? "This git worktree has 1 modified tracked file; archive it after committing, stashing, or reverting the file."
+              : `This git worktree has ${git.dirtyEntryCount} modified tracked files; archive it after committing, stashing, or reverting the files.`,
+          );
+        }
       }
       if (git?.hasUntrackedFiles) {
         warnings.push(
@@ -598,6 +605,13 @@ export function executionWorkspaceService(db: Db) {
             ? "The workspace has 1 untracked file."
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
         );
+        if (!isSharedWorkspace && executionWorkspace.providerType === "git_worktree") {
+          blockingReasons.push(
+            git.untrackedEntryCount === 1
+              ? "This git worktree has 1 untracked file; archive it after committing, stashing, or removing the file."
+              : `This git worktree has ${git.untrackedEntryCount} untracked files; archive it after committing, stashing, or removing the files.`,
+          );
+        }
       }
       if (git?.aheadCount && git.aheadCount > 0 && git.isMergedIntoBase === false) {
         warnings.push(
@@ -605,6 +619,13 @@ export function executionWorkspaceService(db: Db) {
             ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
             : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
         );
+        if (!isSharedWorkspace && executionWorkspace.providerType === "git_worktree") {
+          blockingReasons.push(
+            git.aheadCount === 1
+              ? `This git worktree has 1 unmerged commit ahead of ${git.baseRef ?? "the base ref"}; push or merge it before archive cleanup.`
+              : `This git worktree has ${git.aheadCount} unmerged commits ahead of ${git.baseRef ?? "the base ref"}; push or merge them before archive cleanup.`,
+          );
+        }
       }
       if (git?.behindCount && git.behindCount > 0) {
         warnings.push(
