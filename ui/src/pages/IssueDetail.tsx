@@ -8,7 +8,7 @@ import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
+import { accessApi, type BoardUser } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
@@ -302,7 +302,7 @@ function mergeOptimisticFeedbackVote(
   ];
 }
 
-function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; agentMap: Map<string, Agent>; userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> }) {
+function ActorIdentity({ evt, agentMap, userProfileMap, userMap }: { evt: ActivityEvent; agentMap: Map<string, Agent>; userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile>; userMap?: Map<string, BoardUser> }) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
@@ -311,7 +311,8 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
   if (evt.actorType === "system") return <Identity name="System" size="sm" />;
   if (evt.actorType === "user") {
     const profile = userProfileMap?.get(id);
-    return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
+    const user = userMap?.get(id);
+    return <Identity name={profile?.label ?? user?.name ?? user?.email ?? "Board"} avatarUrl={profile?.image} size="sm" />;
   }
   return <Identity name={id || "Unknown"} size="sm" />;
 }
@@ -688,6 +689,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       hasStoredOutput: (run.logBytes ?? 0) > 0,
     }));
   }, [liveRunIds, resolvedLinkedRuns]);
+
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
     const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
@@ -1156,6 +1158,11 @@ export function IssueDetail() {
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: boardUsers } = useQuery({
+    queryKey: queryKeys.access.boardUsers(selectedCompanyId!),
+    queryFn: () => accessApi.listBoardUsers(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1269,6 +1276,11 @@ export function IssueDetail() {
     () => buildCompanyUserProfileMap(companyMembers?.users),
     [companyMembers?.users],
   );
+  const userMap = useMemo(() => {
+    const map = new Map<string, BoardUser>();
+    for (const u of boardUsers ?? []) map.set(u.id, u);
+    return map;
+  }, [boardUsers]);
   const userLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
@@ -2264,6 +2276,7 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        userMap={userMap}
       />
     );
     return () => closePanel();
@@ -3590,6 +3603,7 @@ export function IssueDetail() {
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
+                userMap={userMap}
               />
             </div>
           </ScrollArea>
