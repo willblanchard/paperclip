@@ -14,6 +14,8 @@ An execution policy is an optional structured object on any issue that defines w
 
 These layers compose. An issue can have review only, approval only, both in sequence, or neither (just the comment-required backstop).
 
+For AutoAgent production-gate reviews, use the [Production Gate Evidence](./board-operator/production-gate-evidence) checklist before approving the review or approval stage. The checklist distinguishes production gate evidence from development smoke comments and gives standard rejection language for fake-pass evidence.
+
 ## Data Model
 
 ### Execution Policy (issue field: `executionPolicy`)
