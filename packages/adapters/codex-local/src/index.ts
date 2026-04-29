@@ -4,6 +4,17 @@ export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [] as const;
 
+export function isCodexLocalKnownModel(model: string | null | undefined): boolean {
+  const normalized = typeof model === "string" ? model.trim() : "";
+  if (!normalized) return false;
+  return models.some((entry) => entry.id === normalized);
+}
+
+export function isCodexLocalManualModel(model: string | null | undefined): boolean {
+  const normalized = typeof model === "string" ? model.trim() : "";
+  return Boolean(normalized) && !isCodexLocalKnownModel(normalized);
+}
+
 export function isCodexLocalFastModeSupported(_model: string | null | undefined): boolean {
   return false;
 }
