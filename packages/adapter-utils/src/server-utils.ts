@@ -104,6 +104,11 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Daily notes go to memory/YYYY-MM-DD.md — keep them concise (progress, blockers, next actions).",
   "- Archive stale daily notes to memory/_archive/ when they are more than 7 days old.",
   "- Do not duplicate incident-specific details that are already captured in issue comments.",
+  "",
+  "Scope boundaries:",
+  "- Do NOT modify Paperclip source code, open PRs against paperclipai/paperclip, or create branches in the Paperclip repo.",
+  "- Paperclip is infrastructure managed by the board. If a task requires Paperclip changes, mark it blocked and escalate to the board.",
+  "- Your work scope is the company's product repos only (e.g. WS-Extraction, wattshift-api, wattshift-rate-validator).",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
