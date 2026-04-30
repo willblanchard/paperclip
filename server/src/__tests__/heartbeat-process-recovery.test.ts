@@ -459,6 +459,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
+    issueTitle?: string;
+    originKind?: string;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -542,7 +544,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         parentId: input.activePauseHold ? rootIssueId : null,
-        title: "Recover stranded assigned work",
+        title: input.issueTitle ?? "Recover stranded assigned work",
         status: input.status,
         priority: "medium",
         assigneeAgentId: input.assignToUser ? null : agentId,
@@ -551,6 +553,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         executionRunId: null,
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
+        ...(input.originKind ? { originKind: input.originKind } : {}),
         startedAt: input.status === "in_progress" ? now : null,
       },
     ]);
@@ -1439,6 +1442,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
+  });
+
+  it("does not create nested stranded recovery issues for recovery work", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      issueTitle: "Recover stalled issue PAP-1",
+      originKind: "stranded_issue_recovery",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
+  });
+
+  it("does not create stranded recovery issues for routine check tickets", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      issueTitle: "Check for uncommitted and not pushed changes",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
