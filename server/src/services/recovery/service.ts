@@ -43,6 +43,11 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const STRANDED_RECOVERY_SKIP_TITLE_PREFIXES = ["Recover stalled issue "] as const;
+const STRANDED_RECOVERY_SKIP_EXACT_TITLES = [
+  "Check for uncommitted and not pushed changes",
+  "Check for Stale Execution Locks and hung agents",
+] as const;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -1241,6 +1246,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  function shouldSkipStrandedIssueRecovery(issue: typeof issues.$inferSelect) {
+    if (issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND) return true;
+    if (issue.originKind === STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND) return true;
+    if (STRANDED_RECOVERY_SKIP_TITLE_PREFIXES.some((prefix) => issue.title.startsWith(prefix))) return true;
+    if (STRANDED_RECOVERY_SKIP_EXACT_TITLES.some((title) => issue.title === title)) return true;
+    return false;
+  }
+
   async function ensureStrandedIssueRecoveryIssue(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -1423,6 +1436,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      if (shouldSkipStrandedIssueRecovery(issue)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
