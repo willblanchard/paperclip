@@ -1491,6 +1491,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryIssues).toHaveLength(0);
   });
 
+  it("blocks failed routine execution issues without spawning manager recovery work", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      issueTitle: "Run repository maintenance routine",
+      originKind: "routine_execution",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+
+    const blockerRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(blockerRelations).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("routine execution issue");
+    expect(comments[0]?.body).toContain("retune/disable the routine");
+  });
+
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

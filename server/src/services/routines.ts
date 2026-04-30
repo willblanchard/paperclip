@@ -658,6 +658,30 @@ export function routineService(
     );
   }
 
+  async function findOpenExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findLiveExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
@@ -861,7 +885,9 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
+        const activeIssue = input.source === "schedule" || input.source === "webhook"
+          ? await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint)
+          : await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
