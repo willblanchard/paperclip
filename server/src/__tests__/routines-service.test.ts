@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -219,6 +219,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(2);
     expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  it("coalesces scheduled dispatches into an existing open idle routine issue", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+      originFingerprint: "default",
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "hourly",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-03-20T13:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-03-20T13:00:00.000Z"));
+    expect(result.triggered).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .orderBy(asc(routineRuns.createdAt));
+    expect(runs.map((run) => run.status).sort()).toEqual(["coalesced", "issue_created"]);
+    expect(runs.find((run) => run.status === "coalesced")?.linkedIssueId).toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(1);
   });
 
   it("creates draft routines without a project or default assignee", async () => {

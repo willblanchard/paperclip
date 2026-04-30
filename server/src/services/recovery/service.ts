@@ -1359,11 +1359,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     comment: string;
   }) {
-    const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
-      issue: input.issue,
-      previousStatus: input.previousStatus,
-      latestRun: input.latestRun,
-    });
+    const isRoutineExecution = input.issue.originKind === "routine_execution";
+    const recoveryIssue = isRoutineExecution
+      ? null
+      : await ensureStrandedIssueRecoveryIssue({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+      });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
@@ -1375,17 +1378,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
-    const recoveryLine = recoveryIssue
+    const recoveryLine = isRoutineExecution
       ? [
         "",
-        `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
-        "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+        "- Recovery issue: none created because this is a routine execution issue; routine failures should stay on the execution issue instead of spawning manager recovery work.",
+        "- Next action: the routine assignee or operator should resolve the routine finding, retune/disable the routine, or close this execution issue as intentionally handled.",
       ].join("\n")
-      : [
-        "",
-        "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
-        "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
-      ].join("\n");
+      : recoveryIssue
+        ? [
+          "",
+          `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
+          "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+        ].join("\n")
+        : [
+          "",
+          "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+          "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+        ].join("\n");
 
     await issuesSvc.addComment(input.issue.id, `${input.comment}${recoveryLine}`, {});
 
